@@ -114,6 +114,10 @@ type Future struct {
 	client backend.TaskHubClient
 }
 
+func (f *Future) ID() string {
+	return string(f.id)
+}
+
 func (f *Future) Wait(ctx context.Context) (string, error) {
 	metadata, err := f.client.WaitForOrchestrationCompletion(ctx, f.id)
 	if err != nil {
