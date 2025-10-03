@@ -14,9 +14,9 @@ import (
 	"github.com/microsoft/durabletask-go/api"
 	"github.com/microsoft/durabletask-go/backend"
 	"github.com/microsoft/durabletask-go/backend/sqlite"
-	"github.com/tursodatabase/go-libsql"
-	_ "github.com/tursodatabase/go-libsql"
+	libsql "github.com/tursodatabase/go-libsql"
 	"google.golang.org/protobuf/proto"
+	_ "modernc.org/sqlite"
 )
 
 var (
@@ -47,12 +47,23 @@ func NewMemoryBackend(logger backend.Logger) backend.Backend {
 	}
 }
 
+func MemoryDB() (*sql.DB, func(), error) {
+	db, err := sql.Open("sqlite", "file::memory:")
+	if err != nil {
+		return nil, nil, err
+	}
+	return db, func() {
+		db.Close()
+	}, err
+}
+
 type LibSQLBackendBuilder struct {
 	host                     string
 	scheme                   string
 	token                    string
 	orchestrationLockTimeout time.Duration
 	activityLockTimeout      time.Duration
+	idleTimeout              time.Duration
 	workerName               string
 	localReplica             string
 }
@@ -102,6 +113,7 @@ func NewLibSQLBackendBuilder() *LibSQLBackendBuilder {
 		workerName:               workerId,
 		host:                     "localhost:8080",
 		scheme:                   "http",
+		idleTimeout:              time.Duration(9 * time.Second),
 		orchestrationLockTimeout: time.Duration(2 * time.Minute),
 		activityLockTimeout:      time.Duration(2 * time.Minute),
 	}
@@ -137,7 +149,16 @@ func (b *LibSQLBackendBuilder) WithToken(token string) *LibSQLBackendBuilder {
 	return b
 }
 
+func (b *LibSQLBackendBuilder) WithIdleTimeout(timeout time.Duration) *LibSQLBackendBuilder {
+	b.idleTimeout = timeout
+	return b
+}
+
 func (b *LibSQLBackendBuilder) Build(logger backend.Logger) backend.Backend {
+	return b.build(logger)
+}
+
+func (b *LibSQLBackendBuilder) build(logger backend.Logger) *libsqlBackend {
 	be := &libsqlBackend{
 		workerName:               b.workerName,
 		host:                     b.host,
@@ -145,6 +166,7 @@ func (b *LibSQLBackendBuilder) Build(logger backend.Logger) backend.Backend {
 		scheme:                   b.scheme,
 		orchestrationLockTimeout: b.orchestrationLockTimeout,
 		activityLockTimeout:      b.activityLockTimeout,
+		idleTimeout:              b.idleTimeout,
 		localReplica:             b.localReplica,
 		logger:                   logger,
 	}
@@ -159,10 +181,24 @@ func (b *LibSQLBackendBuilder) Build(logger backend.Logger) backend.Backend {
 	return be
 }
 
+func (b *LibSQLBackendBuilder) DB() (*sql.DB, func(), error) {
+	be := b.build(NoopLogger())
+	if err := be.initDB(); err != nil {
+		return nil, func() {}, err
+	}
+	return be.db, func() {
+		be.db.Close()
+		if be.connector != nil {
+			be.connector.Close()
+		}
+	}, nil
+}
+
 type libsqlBackend struct {
 	host                     string
 	token                    string
 	scheme                   string
+	idleTimeout              time.Duration
 	orchestrationLockTimeout time.Duration
 	activityLockTimeout      time.Duration
 	dsn                      string
@@ -174,14 +210,13 @@ type libsqlBackend struct {
 	connector *libsql.Connector
 }
 
-// CreateTaskHub creates the sqlite database and applies the schema
-func (be *libsqlBackend) CreateTaskHub(context.Context) error {
+func (be *libsqlBackend) initDB() error {
 	var err error
 	var db *sql.DB
 	if be.localReplica == "" {
 		db, err = sql.Open("libsql", be.dsn)
 		if err != nil {
-			panic(fmt.Errorf("failed to open the database: %w", err))
+			return fmt.Errorf("failed to open the database: %w", err)
 		}
 	} else {
 		var opts []libsql.Option
@@ -190,25 +225,35 @@ func (be *libsqlBackend) CreateTaskHub(context.Context) error {
 		}
 		be.connector, err = libsql.NewEmbeddedReplicaConnector(be.localReplica, be.dsn, opts...)
 		if err != nil {
-			panic(fmt.Errorf("failed to initialize the replica connector: %w", err))
+			return fmt.Errorf("failed to initialize the replica connector: %w", err)
 		}
 		db = sql.OpenDB(be.connector)
 	}
 
-	// Initialize database
-	if _, err := db.Exec(schema); err != nil {
-		panic(fmt.Errorf("failed to initialize the database: %w", err))
-	}
 	// initialize connection pool
-	db.SetConnMaxIdleTime(9 * time.Second)
+	db.SetConnMaxIdleTime(be.idleTimeout)
 	be.db = db
+
+	return nil
+}
+
+// CreateTaskHub creates the sqlite database and applies the schema
+func (be *libsqlBackend) CreateTaskHub(context.Context) error {
+	if err := be.initDB(); err != nil {
+		panic(err)
+	}
+
+	// Initialize database
+	if err := execStatements(be.db, schema); err != nil {
+		panic(fmt.Errorf("failed to destroy the database: %w", err))
+	}
 
 	return nil
 }
 
 func (be *libsqlBackend) DeleteTaskHub(ctx context.Context) error {
 	// Destroy the database
-	if _, err := be.db.Exec(dropSchema); err != nil {
+	if err := execStatements(be.db, dropSchema); err != nil {
 		return fmt.Errorf("failed to destroy the database: %w", err)
 	}
 	return nil
@@ -1082,4 +1127,17 @@ func (be *libsqlBackend) ensureDB() error {
 
 func (be *libsqlBackend) String() string {
 	return fmt.Sprintf("host: %s://%s", be.scheme, be.host)
+}
+
+func execStatements(db *sql.DB, statements string) error {
+	for _, statement := range strings.Split(statements, ";") {
+		statement = strings.TrimSpace(statement)
+		if statement == "" {
+			continue
+		}
+		if _, err := db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
