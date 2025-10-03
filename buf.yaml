@@ -2,6 +2,7 @@
 version: v2
 modules:
   - path: proto
+    name: buf.build/andrewstucki/protoc-states
   - path: example/proto
 lint:
   use:
