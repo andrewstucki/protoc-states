@@ -1,0 +1,16 @@
+version: '3'
+
+# if a task is referenced multiple times, only run it once
+run: once
+
+# configure bash to recursively expand **
+shopt: [globstar]
+
+tasks:
+  generate:
+    cmds:
+    - buf generate
+
+  generate:example:
+    cmds:
+    - buf generate --template buf.example.yaml

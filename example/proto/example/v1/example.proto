@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package example.v1;
+
+import "state/v1/state.proto";
+
+option go_package = "github.com/andrewstucki/protoc-states/example/gen/example/v1";
+
+message StateMachine {
+  string a = 1;
+  string b = 2;
+  string c = 3;
+  option (state.v1.machine).states = {
+    default_retry_policy: {max_attempts: 5, initial_retry_interval_seconds: 1, backoff_coefficient: 2.0, max_retry_interval_seconds: 10, retry_timeout_seconds: 60},
+    transitions: [
+      {name: "foo"},
+      {name: "bar"},
+      {name: "baz"}
+    ]
+  };
+}

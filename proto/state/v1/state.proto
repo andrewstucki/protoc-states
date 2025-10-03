@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package state.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/andrewstucki/protoc-states/gen/state/v1";
+
+message RetryPolicy {
+  int32 max_attempts = 1;
+  int32 initial_retry_interval_seconds = 2;
+  double backoff_coefficient = 3;
+  int32 max_retry_interval_seconds = 4;
+  int32 retry_timeout_seconds = 5;
+}
+
+message StateTransition {
+  string name = 1;
+  RetryPolicy retry_policy = 2;
+}
+
+message States {
+  RetryPolicy default_retry_policy = 1;
+  repeated StateTransition transitions = 2;
+}
+
+message Machine {
+  States states = 1;
+}
+
+extend google.protobuf.MessageOptions {
+  optional Machine machine = 116000;
+}
